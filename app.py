@@ -1960,9 +1960,9 @@ def proxy():
     """Proxy per liste M3U che aggiunge automaticamente /proxy/m3u?url= con IP prima dei link"""
     # Controlla se è una richiesta di combinazione playlist (formato: /proxy?def1&url1;def2&url2)
     query_string = request.query_string.decode('utf-8')
-    
-    if ';' in query_string:
-        # Modalità combinazione playlist
+
+    # Se c'è almeno un '&', trattiamo come combinazione playlist (anche una sola)
+    if '&' in query_string:
         return proxy_playlist_combiner()
     else:
         # Modalità proxy singola playlist (comportamento originale)
