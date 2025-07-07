@@ -341,3 +341,17 @@ Per problemi o domande, apri una issue su GitHub.
 
 </div>
 
+
+
+
+# Test the server
+curl http://localhost:8080/
+
+# Test MPD analysis  
+curl "http://localhost:8080/proxy/mpd/info?url=https://example.com/manifest.mpd"
+
+# Test MPD to HLS conversion
+curl "http://localhost:8080/proxy/mpd?url=https://example.com/manifest.mpd"
+
+# Test with DRM keys
+curl "http://localhost:8080/proxy/mpd?url=https://example.com/manifest.mpd&key_id=abc123&key=def456"

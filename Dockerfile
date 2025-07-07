@@ -3,11 +3,13 @@
 # 1. Usa l'immagine base ufficiale di Python 3.12 slim
 FROM python:3.12-slim
 
-# 2. Installa git e certificati SSL (per clonare da GitHub e HTTPS)
+# 2. Installa git, certificati SSL e build tools (per psutil e altre dipendenze)
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
     curl \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Imposta la directory di lavoro
