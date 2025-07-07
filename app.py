@@ -2655,19 +2655,6 @@ def proxy_mpd():
 
     app.logger.info(f"🎯 MPD Bridge: {mpd_url}")
     
-    # MediaFlow-Proxy working base URL
-    MEDIAFLOW_BASE = "https://mfpi.pizzapi.uk"
-    
-    # Build parameters for mediaflow-proxy
-    params = {
-        'api_password': 'mfp',
-        'd': mpd_url,
-        'key_id': key_id,
-        'key': key_value
-    }
-    
-    mediaflow_url = f"{MEDIAFLOW_BASE}/proxy/mpd/manifest.m3u8?" + urlencode(params)
-    
     try:
         # Make request to working mediaflow-proxy
         response = make_persistent_request(
