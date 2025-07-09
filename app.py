@@ -2851,9 +2851,10 @@ def build_hls_playlist(mpd_data, profile_id, request_host, key_id=None, key=None
 @app.route('/proxy/mpd/manifest.m3u8')
 def mpd_manifest():
     """Convert MPD to HLS master manifest"""
-    return handle_mpd_manifest(request, mpd_cache)
     if not MPD_SUPPORT:
         return "MPD support not available. Install xmltodict and pycryptodome", 500
+
+    return handle_mpd_manifest(request, mpd_cache)
 
     try:
         mpd_url = request.args.get('d')
