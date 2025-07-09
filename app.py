@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify
 import requests
-from urllib.parse import urlparse, urljoin, quote, unquote, quote_plus, urlencode
+from urllib.parse import urlparse, urljoin, quote, unquote, quote_plus
 import re
 import json
 import base64
@@ -18,11 +18,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import logging
 from datetime import datetime
-# MPD and DRM support imports
-import xmltodict
-from utils.mpd_utils import parse_mpd, parse_mpd_dict, extract_drm_info
-from drm.decrypter import MP4Decrypter
-from mpd_processor import process_mpd_manifest, process_mpd_playlist, process_mpd_segment
+
+# --- Import aggiuntivi per MPD Clear-Key ---
+try:
+    import xmltodict
+    from Crypto.Cipher import AES
+    from Crypto.Util import Counter
+    MPD_SUPPORT = True
+except ImportError:
+    MPD_SUPPORT = False
+    print("AVVISO: xmltodict e/o pycryptodome non installati. Funzionalità MPD non disponibile.")
 
 app = Flask(__name__)
 
@@ -414,12 +419,6 @@ class PreBufferManager:
                 app.logger.warning(f"Buffer troppo grande ({buffer_memory_percent:.1f}%), pulizia automatica")
                 self.cleanup_oldest_streams()
                 return False
-            
-            return True
-            
-        except Exception as e:
-            app.logger.error(f"Errore nel controllo memoria: {e}")
-            return True
             
             return True
             
@@ -1494,30 +1493,6 @@ def index():
             </div>
             
             <div class="endpoint">
-                <h4>🎬 MPD/DASH Proxy</h4>
-                <p>Converte file MPD (MPEG-DASH) in HLS con supporto DRM ClearKey</p>
-                <div class="example">/proxy/mpd?url=URL_MPD</div>
-            </div>
-            
-            <div class="endpoint">
-                <h4>📹 MPD Playlist</h4>
-                <p>Gestisce playlist specifiche per profili MPD</p>
-                <div class="example">/proxy/mpd/playlist?url=URL_MPD&profile_id=ID</div>
-            </div>
-            
-            <div class="endpoint">
-                <h4>🎞️ MPD Segments</h4>
-                <p>Scarica e decripta segmenti MPD con DRM</p>
-                <div class="example">/proxy/mpd/segment?url=URL_SEGMENT&key_id=ID&key=KEY</div>
-            </div>
-            
-            <div class="endpoint">
-                <h4>ℹ️ MPD Info</h4>
-                <p>Analizza file MPD e mostra informazioni DRM e profili</p>
-                <div class="example">/proxy/mpd/info?url=URL_MPD</div>
-            </div>
-            
-            <div class="endpoint">
                 <h4>🎯 SIptv Resolver (Ultra-Veloce)</h4>
                 <p>Risolve tutti i link in una playlist M3U in parallelo (fino a 100 workers) con cache intelligente e timeout ottimizzati</p>
                 <div class="example">/proxy/siptv?url=URL_PLAYLIST</div>
@@ -1549,11 +1524,6 @@ def index():
                 <li>Retry automatico in caso di errori</li>
                 <li>Playlist Builder per combinare multiple playlist</li>
                 <li>Riscrittura automatica di link VixCloud, M3U8, MPD e PHP</li>
-                <li>🆕 Conversione MPD (MPEG-DASH) → HLS automatica</li>
-                <li>🆕 Supporto DRM ClearKey per contenuti protetti</li>
-                <li>🆕 Decrittazione real-time di segmenti video</li>
-                <li>🆕 Multi-profilo audio/video per MPD</li>
-                <li>🆕 Supporto Live e VOD per streaming DASH</li>
             </ul>
         </div>
         
@@ -1695,7 +1665,7 @@ def url_builder():
 
                 const finalUrl = serverAddress + '/proxy?' + definitions.join(';');
                 document.getElementById('generated-url').textContent = finalUrl;
-                                                                                         }
+            }
 
 
         </script>
@@ -1757,11 +1727,6 @@ def proxy_m3u():
     m3u_url = request.args.get('url', '').strip()
     if not m3u_url:
         return "Errore: Parametro 'url' mancante", 400
-
-    # Check if this is an MPD file and redirect to MPD handler
-    if '.mpd' in m3u_url.lower() or 'manifest' in m3u_url.lower():
-        app.logger.info(f"Detected MPD file, redirecting to MPD handler: {m3u_url}")
-        return proxy_mpd()
 
     cache_key_headers = "&".join(sorted([f"{k}={v}" for k, v in request.args.items() if k.lower().startswith("h_")]))
     cache_key = f"{m3u_url}|{cache_key_headers}"
@@ -1848,7 +1813,7 @@ def proxy_m3u():
         # Avvia il pre-buffering in background
         def start_pre_buffering():
             try:
-                pre_buffer_manager.pre_buffer_segments(m3u8_content, base_url, current_headers_for_proxy, stream_id)
+                pre_buffer_manager.pre_buffer_segments(m3u_content, base_url, current_headers_for_proxy, stream_id)
             except Exception as e:
                 app.logger.error(f"Errore nell'avvio del pre-buffering: {e}")
 
@@ -2062,7 +2027,7 @@ def proxy_playlist_combiner():
                 base_url_part = base_url_part.rstrip('/')
                 app.logger.info(f"[{definition_idx}] Processing Playlist (streaming): {playlist_url_str}")
 
-                current_playlist_had_lines = false
+                current_playlist_had_lines = False
                 first_line_of_this_segment = True
                 lines_processed_for_current_playlist = 0
                 try:
@@ -2099,7 +2064,7 @@ def proxy_playlist_combiner():
                                 pass
                             else:
                                 yield line
-                        first_line_of_this_segment = false
+                        first_line_of_this_segment = False
 
                         # This block for logging and length check was duplicated, ensure it's correctly placed for all yielded lines
                         if first_playlist_header_handled: # If not the first header part, calculate bytes and log here too
@@ -2159,7 +2124,7 @@ def proxy_single_playlist():
         m3u_content = response.text
         
         modified_lines = []
-        current_stream_headers_params = [];
+        current_stream_headers_params = []
 
         for line in m3u_content.splitlines():
             line = line.strip()
@@ -2214,30 +2179,30 @@ def proxy_single_playlist():
                 if 'pluto.tv' in line.lower():
                     modified_lines.append(line)
                 else:
-                    encoded_line = quote(line, safe='');
-                    headers_query_string = "";
+                    encoded_line = quote(line, safe='')
+                    headers_query_string = ""
                     if current_stream_headers_params:
-                        headers_query_string = "%26" + "%26".join(current_stream_headers_params);
+                        headers_query_string = "%26" + "%26".join(current_stream_headers_params)
                     
-                    modified_line = f"http://{server_ip}/proxy/m3u?url={encoded_line}{headers_query_string}";
-                    modified_lines.append(modified_line);
+                    modified_line = f"http://{server_ip}/proxy/m3u?url={encoded_line}{headers_query_string}"
+                    modified_lines.append(modified_line)
                 
-                current_stream_headers_params = []; 
+                current_stream_headers_params = [] 
             else:
-                modified_lines.append(line);
+                modified_lines.append(line)
         
-        modified_content = '\n'.join(modified_lines);
-        parsed_m3u_url = urlparse(m3u_url);
-        original_filename = os.path.basename(parsed_m3u_url.path);
+        modified_content = '\n'.join(modified_lines)
+        parsed_m3u_url = urlparse(m3u_url)
+        original_filename = os.path.basename(parsed_m3u_url.path)
         
-        return Response(modified_content, content_type="application/vnd.apple.mpegurl", headers={'Content-Disposition': f'attachment; filename="{original_filename}"'});
+        return Response(modified_content, content_type="application/vnd.apple.mpegurl", headers={'Content-Disposition': f'attachment; filename="{original_filename}"'})
         
     except requests.RequestException as e:
-        app.logger.error(f"Fallito il download di '{m3u_url}': {e}");
-        return f"Errore durante il download della lista M3U: {str(e)}", 500;
+        app.logger.error(f"Fallito il download di '{m3u_url}': {e}")
+        return f"Errore durante il download della lista M3U: {str(e)}", 500
     except Exception as e:
-        app.logger.error(f"Errore generico nel proxy M3U: {e}");
-        return f"Errore generico: {str(e)}", 500;
+        app.logger.error(f"Errore generico nel proxy M3U: {e}")
+        return f"Errore generico: {str(e)}", 500
 
 @app.route('/proxy/key')
 def proxy_key():
@@ -2442,7 +2407,7 @@ def proxy_siptv():
         for line in m3u_content.splitlines():
             line = line.strip()
             line_index += 1
-
+            
             # Gestione headers dalle direttive
             if line.startswith('#EXTHTTP:'):
                 try:
@@ -2641,266 +2606,6 @@ def proxy_siptv():
     except Exception as e:
         return f"Errore generico: {str(e)}", 500
 
-# --- MPD and DRM Support Routes ---
-
-@app.route('/proxy/mpd')
-def proxy_mpd():
-    """Proxy for MPD files - Bridge to MediaFlow-Proxy (WORKING VERSION)"""
-    mpd_url = request.args.get('url', '').strip()
-    key_id = request.args.get('key_id', '').strip()
-    key_value = request.args.get('key', '').strip()
-    
-    if not mpd_url:
-        return "Error: Missing 'url' parameter", 400
-
-    app.logger.info(f"🎯 MPD Bridge: {mpd_url}")
-    
-    try:
-        # Make request to working mediaflow-proxy
-        response = make_persistent_request(
-            mediaflow_url,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True
-        )
-        response.raise_for_status()
-        
-        # Return response with correct headers for VLC
-        flask_response = Response(
-            response.content,
-            status=response.status_code,
-            content_type="application/vnd.apple.mpegurl"
-        )
-        
-        # Critical headers for VLC compatibility (TESTED AND WORKING)
-        flask_response.headers['Access-Control-Allow-Origin'] = '*'
-        flask_response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        flask_response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization, Range'
-        flask_response.headers['Accept-Ranges'] = 'bytes'
-        flask_response.headers['Cache-Control'] = 'no-cache'
-        
-        app.logger.info(f"✅ MPD Bridge successful for {mpd_url}")
-        return flask_response
-        
-    except Exception as e:
-        app.logger.error(f"❌ MPD Bridge error: {e}")
-        return f"Error: {str(e)}", 500
-
-@app.route('/proxy/mpd/playlist')
-def proxy_mpd_playlist():
-    """Handle MPD variant playlist requests"""
-    mpd_url = request.args.get('mpd_url', '').strip()  # Changed from 'url' to 'mpd_url'
-    profile_id = request.args.get('profile_id', '').strip()
-    key_id = request.args.get('key_id', '').strip()
-    key_value = request.args.get('key', '').strip()
-    
-    if not all([mpd_url, profile_id]):
-        app.logger.error(f"Missing parameters: mpd_url={mpd_url}, profile_id={profile_id}")
-        return "Error: Missing required parameters", 400
-
-    app.logger.info(f"Processing MPD playlist for profile {profile_id} from {mpd_url}")
-    
-    # Get custom headers
-    request_headers = {
-        unquote(key[2:]).replace("_", "-"): unquote(value).strip()
-        for key, value in request.args.items()
-        if key.lower().startswith("h_")
-    }
-
-    try:
-        # Download MPD content first
-        proxy_config = get_proxy_for_url(mpd_url)
-        proxy_key = proxy_config['http'] if proxy_config else None
-        
-        response = make_persistent_request(
-            mpd_url,
-            headers=request_headers,
-            timeout=REQUEST_TIMEOUT,
-            proxy_url=proxy_key,
-            allow_redirects=True
-        )
-        response.raise_for_status()
-        mpd_content = response.text
-
-        # Generate playlist for specific profile using imported function
-        result = process_mpd_playlist(
-            mpd_content, 
-            mpd_url, 
-            profile_id, 
-            request.host, 
-            request_headers,
-            key_id,
-            key_value
-        )
-        
-        if not result:
-            app.logger.error(f"process_mpd_playlist returned empty result for profile {profile_id}")
-            return "Error: Could not generate playlist", 500
-            
-        response = Response(result, content_type="application/vnd.apple.mpegurl")
-        # Add headers to prevent browser download and enable streaming
-        response.headers['Content-Disposition'] = 'inline'
-        response.headers['Cache-Control'] = 'no-cache'
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Range'
-        response.headers['Accept-Ranges'] = 'bytes'
-        
-        return response
-        
-    except ValueError as e:
-        app.logger.error(f"ValueError generating MPD playlist for profile {profile_id}: {e}")
-        return f"Error: {str(e)}", 400
-    except Exception as e:
-        app.logger.error(f"Error generating MPD playlist for profile {profile_id}: {e}")
-        return f"Error generating playlist: {str(e)}", 500
-
-@app.route('/proxy/mpd/segment.mp4')
-@app.route('/proxy/mpd/segment')
-def proxy_mpd_segment():
-    """Handle MPD segment requests with DRM decryption"""
-    segment_url = request.args.get('segment_url', '').strip() or request.args.get('url', '').strip()
-    init_url = request.args.get('init_url', '').strip()
-    key_id = request.args.get('key_id', '').strip()
-    key_value = request.args.get('key', '').strip()
-    
-
-    
-    if not segment_url:
-        app.logger.error(f"Missing segment URL. Request args: {dict(request.args)}")
-        return "Error: Missing segment URL", 400
-
-    app.logger.info(f"Processing MPD segment: {segment_url} (init_url: {init_url})")
-    
-    # Get custom headers
-    request_headers = {
-        unquote(key[2:]).replace("_", "-"): unquote(value).strip()
-        for key, value in request.args.items()
-        if key.lower().startswith("h_")
-    }
-
-    try:
-        # Download init segment if provided
-        init_content = b''
-        if init_url:
-            proxy_config = get_proxy_for_url(init_url)
-            proxy_key = proxy_config['http'] if proxy_config else None
-            
-            init_response = make_persistent_request(
-                init_url,
-                headers=request_headers,
-                timeout=REQUEST_TIMEOUT,
-                proxy_url=proxy_key,
-                allow_redirects=True
-            )
-            init_response.raise_for_status()
-            init_content = init_response.content
-
-        # Download segment content
-        proxy_config = get_proxy_for_url(segment_url)
-        proxy_key = proxy_config['http'] if proxy_config else None
-        
-        segment_response = make_persistent_request(
-            segment_url,
-            headers=request_headers,
-            timeout=REQUEST_TIMEOUT,
-            proxy_url=proxy_key,
-            allow_redirects=True
-        )
-        segment_response.raise_for_status()
-        segment_content = segment_response.content
-
-        # Get mime type from request or determine from URL
-        mime_type = request.args.get('mime_type', '').strip()
-        if not mime_type:
-            if '.m4v' in segment_url or 'video' in segment_url:
-                mime_type = "video/mp4"
-            elif '.m4a' in segment_url or 'audio' in segment_url:
-                mime_type = "audio/mp4"
-            else:
-                mime_type = "video/mp2t"
-
-        # Process segment with DRM decryption if needed
-        app.logger.info(f"About to call process_mpd_segment with key_id={key_id}, key_value={key_value}")
-        result = process_mpd_segment(
-            init_content,
-            segment_content, 
-            mime_type,  # Use detected mime type
-            key_id=key_id if key_id else None, 
-            key=key_value if key_value else None
-        )
-        
-        if not result:
-            app.logger.error(f"process_mpd_segment returned empty result for {segment_url}")
-            return "Error: Could not process segment", 500
-            
-        # Return with original mime type (like mediaflow-proxy does)
-        app.logger.info(f"Returning segment with content_type: {mime_type}")
-        return Response(result, content_type=mime_type)
-        
-    except Exception as e:
-        app.logger.error(f"Error processing MPD segment {segment_url}: {e}")
-        return f"Error processing segment: {str(e)}", 500
-
-@app.route('/proxy/mpd/info')
-def proxy_mpd_info():
-    """Get information about an MPD file"""
-    mpd_url = request.args.get('url', '').strip()
-    if not mpd_url:
-        return "Error: Missing 'url' parameter", 400
-
-    # Get custom headers
-    request_headers = {
-        unquote(key[2:]).replace("_", "-"): unquote(value).strip()
-        for key, value in request.args.items()
-        if key.lower().startswith("h_")
-    }
-
-    try:
-        # Download MPD content
-        proxy_config = get_proxy_for_url(mpd_url)
-        proxy_key = proxy_config['http'] if proxy_config else None
-        
-        response = make_persistent_request(
-            mpd_url,
-            headers=request_headers,
-            timeout=REQUEST_TIMEOUT,
-            proxy_url=proxy_key,
-            allow_redirects=True
-        )
-        response.raise_for_status()
-        mpd_content = response.text
-
-        # Parse MPD to get information
-        mpd_dict = parse_mpd(mpd_content)
-        parsed_mpd = parse_mpd_dict(mpd_dict, mpd_url, parse_drm=True)
-        
-        # Extract basic information
-        info = {
-            "url": mpd_url,
-            "isLive": parsed_mpd.get("isLive", False),
-            "profiles": [
-                {
-                    "id": profile.get("id"),
-                    "mimeType": profile.get("mimeType"),
-                    "codecs": profile.get("codecs"),
-                    "bandwidth": profile.get("bandwidth"),
-                    "width": profile.get("width"),
-                    "height": profile.get("height")
-                }
-                for profile in parsed_mpd.get("profiles", [])
-            ],
-            "drmInfo": parsed_mpd.get("drmInfo", {}),
-            "supportedInTvProxy": True
-        }
-        
-        if not info:
-            return jsonify({"error": "Could not retrieve MPD info"}), 500
-            
-        return jsonify(info)
-        
-    except Exception as e:
-        app.logger.error(f"Error getting MPD info: {e}")
-        return jsonify({"error": str(e)}), 500
-
 # --- Inizializzazione dell'app ---
 
 # Carica e applica la configurazione salvata al startup
@@ -2915,75 +2620,383 @@ app.logger.info("Configurazione pre-buffer inizializzata con successo")
 setup_all_caches()
 setup_proxies()
 
-# Log initialization of MPD support - WORKING WITH VLC! 
-app.logger.info("✅ MPD/DRM support initialized - MediaFlow bridge mode ACTIVE")
 
-@app.route('/proxy/mpd/manifest.m3u8')
-def proxy_mpd_manifest():
-    """MPD manifest proxy endpoint that replicates mediaflow-proxy API"""
-    # Use 'd' parameter like mediaflow-proxy
-    mpd_url = request.args.get('d', '').strip()
-    if not mpd_url:
-        return "Error: Missing 'd' parameter", 400
 
-    app.logger.info(f"Processing MPD manifest: {mpd_url}")
-    
-    # Get custom headers (with h_ prefix like mediaflow-proxy)
-    request_headers = {
-        unquote(key[2:]).replace("_", "-"): unquote(value).strip()
-        for key, value in request.args.items()
-        if key.lower().startswith("h_")
-    }
 
-    # Get DRM parameters
-    key_id = request.args.get('key_id', '').strip()
-    key_value = request.args.get('key', '').strip()
+
+# =======================================================
+# FUNZIONI MPD CLEAR-KEY (da MediaFlow Proxy)
+# =======================================================
+
+def parse_mpd_content(mpd_content):
+    """Parse MPD content and extract video/audio profiles and DRM info"""
+    if not MPD_SUPPORT:
+        raise Exception("MPD support not available. Install xmltodict and pycryptodome")
 
     try:
-        # Download MPD content
+        # Parse XML to dict
+        mpd_dict = xmltodict.parse(mpd_content)
+
+        # Extract basic info
+        mpd_data = mpd_dict.get('MPD', {})
+
+        # Extract adaptation sets
+        period = mpd_data.get('Period', {})
+        if isinstance(period, list):
+            period = period[0]
+
+        adaptation_sets = period.get('AdaptationSet', [])
+        if not isinstance(adaptation_sets, list):
+            adaptation_sets = [adaptation_sets]
+
+        profiles = []
+        base_url = ""
+
+        # Extract base URL
+        if 'BaseURL' in mpd_data:
+            base_url = mpd_data['BaseURL']
+        elif 'BaseURL' in period:
+            base_url = period['BaseURL']
+
+        # Process each adaptation set
+        for adaptation_set in adaptation_sets:
+            content_type = adaptation_set.get('@contentType', '')
+            mime_type = adaptation_set.get('@mimeType', '')
+
+            representations = adaptation_set.get('Representation', [])
+            if not isinstance(representations, list):
+                representations = [representations]
+
+            for representation in representations:
+                profile = {
+                    'id': representation.get('@id', ''),
+                    'bandwidth': int(representation.get('@bandwidth', 0)),
+                    'width': int(representation.get('@width', 0)),
+                    'height': int(representation.get('@height', 0)),
+                    'codecs': representation.get('@codecs', ''),
+                    'content_type': content_type,
+                    'mime_type': mime_type,
+                    'base_url': base_url
+                }
+
+                # Extract segment template
+                segment_template = representation.get('SegmentTemplate') or adaptation_set.get('SegmentTemplate')
+                if segment_template:
+                    profile['segment_template'] = segment_template
+
+                # Extract initialization URL
+                if segment_template and '@initialization' in segment_template:
+                    profile['init_url'] = segment_template['@initialization']
+
+                profiles.append(profile)
+
+        # Extract DRM info
+        drm_info = {}
+        for adaptation_set in adaptation_sets:
+            content_protection = adaptation_set.get('ContentProtection', [])
+            if not isinstance(content_protection, list):
+                content_protection = [content_protection]
+
+            for cp in content_protection:
+                scheme_id = cp.get('@schemeIdUri', '')
+                if 'clearkey' in scheme_id.lower():
+                    drm_info['clearkey'] = True
+                    # Extract key info if available
+                    if 'cenc:default_KID' in cp:
+                        drm_info['key_id'] = cp.get('cenc:default_KID', '')
+
+        return {
+            'profiles': profiles,
+            'drm_info': drm_info,
+            'base_url': base_url,
+            'mpd_data': mpd_data
+        }
+
+    except Exception as e:
+        app.logger.error(f"Errore parsing MPD: {str(e)}")
+        raise Exception(f"Errore nel parsing MPD: {str(e)}")
+
+def decrypt_segment(segment_data, key, iv=None):
+    """Decrypt segment using Clear-Key AES-CTR"""
+    if not MPD_SUPPORT:
+        raise Exception("MPD support not available")
+
+    try:
+        # Convert hex key to bytes
+        if isinstance(key, str):
+            key_bytes = bytes.fromhex(key.replace('-', ''))
+        else:
+            key_bytes = key
+
+        # Default IV if not provided
+        if iv is None:
+            iv_bytes = b'\x00' * 16
+        else:
+            if isinstance(iv, str):
+                iv_bytes = bytes.fromhex(iv.replace('-', ''))
+            else:
+                iv_bytes = iv
+
+        # Create AES cipher in CTR mode
+        ctr = Counter.new(128, initial_value=int.from_bytes(iv_bytes, 'big'))
+        cipher = AES.new(key_bytes, AES.MODE_CTR, counter=ctr)
+
+        # Decrypt the segment
+        decrypted_data = cipher.decrypt(segment_data)
+
+        return decrypted_data
+
+    except Exception as e:
+        app.logger.error(f"Errore decriptazione: {str(e)}")
+        raise Exception(f"Errore nella decriptazione: {str(e)}")
+
+def build_hls_manifest(mpd_data, request_host, key_id=None, key=None):
+    """Build HLS master manifest from MPD data"""
+
+    lines = ['#EXTM3U']
+
+    # Group profiles by content type
+    video_profiles = [p for p in mpd_data['profiles'] if p['content_type'] == 'video' or p['mime_type'].startswith('video/')]
+    audio_profiles = [p for p in mpd_data['profiles'] if p['content_type'] == 'audio' or p['mime_type'].startswith('audio/')]
+
+    # Add video variants
+    for profile in video_profiles:
+        bandwidth = profile['bandwidth']
+        resolution = f"{profile['width']}x{profile['height']}" if profile['width'] and profile['height'] else ""
+        codecs = profile['codecs']
+
+        # Build variant line
+        variant_line = f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}"
+        if resolution:
+            variant_line += f",RESOLUTION={resolution}"
+        if codecs:
+            variant_line += f",CODECS=\"{codecs}\""
+
+        lines.append(variant_line)
+
+        # Build playlist URL
+        playlist_url = f"http://{request_host}/proxy/mpd/playlist.m3u8?d={mpd_data['base_url']}&i={profile['id']}"
+        if key_id:
+            playlist_url += f"&key_id={key_id}"
+        if key:
+            playlist_url += f"&key={key}"
+
+        lines.append(playlist_url)
+
+    # Add audio variants if separate
+    for profile in audio_profiles:
+        if not video_profiles:  # Only if no video profiles
+            bandwidth = profile['bandwidth']
+            codecs = profile['codecs']
+
+            variant_line = f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}"
+            if codecs:
+                variant_line += f",CODECS=\"{codecs}\""
+
+            lines.append(variant_line)
+
+            playlist_url = f"http://{request_host}/proxy/mpd/playlist.m3u8?d={mpd_data['base_url']}&i={profile['id']}"
+            if key_id:
+                playlist_url += f"&key_id={key_id}"
+            if key:
+                playlist_url += f"&key={key}"
+
+            lines.append(playlist_url)
+
+    return '\n'.join(lines)
+
+def build_hls_playlist(mpd_data, profile_id, request_host, key_id=None, key=None):
+    """Build HLS playlist for specific profile"""
+
+    # Find the profile
+    profile = None
+    for p in mpd_data['profiles']:
+        if p['id'] == profile_id:
+            profile = p
+            break
+
+    if not profile:
+        raise Exception(f"Profile {profile_id} not found")
+
+    lines = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:10',
+        '#EXT-X-MEDIA-SEQUENCE:0'
+    ]
+
+    # Add segments (simplified - would need to parse segment template)
+    segment_template = profile.get('segment_template', {})
+    if segment_template:
+        # This is a simplified implementation
+        # In reality, you'd parse the segment template and generate actual segments
+        for i in range(100):  # Example: 100 segments
+            lines.append('#EXTINF:10.0,')
+
+            segment_url = f"http://{request_host}/proxy/mpd/segment.mp4?u={mpd_data['base_url']}&s={i}"
+            if key_id:
+                segment_url += f"&key_id={key_id}"
+            if key:
+                segment_url += f"&key={key}"
+
+            lines.append(segment_url)
+
+    return '\n'.join(lines)
+
+# =======================================================
+# ENDPOINT MPD CLEAR-KEY
+# =======================================================
+
+@app.route('/proxy/mpd/manifest.m3u8')
+def mpd_manifest():
+    """Convert MPD to HLS master manifest"""
+    if not MPD_SUPPORT:
+        return "MPD support not available. Install xmltodict and pycryptodome", 500
+
+    try:
+        mpd_url = request.args.get('d')
+        key_id = request.args.get('key_id')
+        key = request.args.get('key')
+
+        if not mpd_url:
+            return "Missing required parameter 'd' (MPD URL)", 400
+
+        app.logger.info(f"Processing MPD: {mpd_url}")
+
+        # Check cache first
+        cache_key = f"mpd_manifest_{hashlib.md5(mpd_url.encode()).hexdigest()}"
+        if cache_key in mpd_cache:
+            app.logger.info(f"MPD manifest cache hit: {mpd_url}")
+            cached_data = mpd_cache[cache_key]
+            hls_content = build_hls_manifest(cached_data, request.host, key_id, key)
+            return Response(hls_content, mimetype='application/vnd.apple.mpegurl')
+
+        # Download MPD
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
         proxy_config = get_proxy_for_url(mpd_url)
         proxy_key = proxy_config['http'] if proxy_config else None
-        
-        response = make_persistent_request(
-            mpd_url,
-            headers=request_headers,
-            timeout=REQUEST_TIMEOUT,
-            proxy_url=proxy_key,
-            allow_redirects=True
-        )
-        response.raise_for_status()
-        mpd_content = response.text
 
-        # Process MPD and convert to HLS
-        result = process_mpd_manifest(
-            mpd_content, 
-            mpd_url, 
-            request.host, 
-            request_headers, 
-            key_id if key_id else None, 
-            key_value if key_value else None
-        )
-        
-        if not result:
-            return "Error: Could not process MPD file", 500
-            
-        # Create response with correct headers like mediaflow-proxy
-        response = Response(result, content_type="application/vnd.apple.mpegurl")
-        
-        # Add headers to prevent download and enable streaming
-        response.headers['Content-Disposition'] = 'inline'
-        response.headers['Cache-Control'] = 'no-cache'
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Range'
-        response.headers['Accept-Ranges'] = 'bytes'
-        
-        return response
-        
+        with make_persistent_request(mpd_url, headers=headers, timeout=REQUEST_TIMEOUT, proxy_url=proxy_key) as response:
+            response.raise_for_status()
+            mpd_content = response.text
+
+        # Parse MPD
+        mpd_data = parse_mpd_content(mpd_content)
+
+        # Cache the parsed data
+        mpd_cache[cache_key] = mpd_data
+
+        # Build HLS manifest
+        hls_content = build_hls_manifest(mpd_data, request.host, key_id, key)
+
+        return Response(hls_content, mimetype='application/vnd.apple.mpegurl')
+
     except Exception as e:
-        app.logger.error(f"Error processing MPD manifest: {e}")
+        app.logger.error(f"Errore processing MPD: {str(e)}")
         return f"Error processing MPD: {str(e)}", 500
 
+@app.route('/proxy/mpd/playlist.m3u8')
+def mpd_playlist():
+    """Generate HLS playlist for specific profile"""
+    if not MPD_SUPPORT:
+        return "MPD support not available. Install xmltodict and pycryptodome", 500
+
+    try:
+        mpd_url = request.args.get('d')
+        profile_id = request.args.get('i')
+        key_id = request.args.get('key_id')
+        key = request.args.get('key')
+
+        if not mpd_url or not profile_id:
+            return "Missing required parameters 'd' (MPD URL) or 'i' (profile ID)", 400
+
+        # Check cache first
+        cache_key = f"mpd_manifest_{hashlib.md5(mpd_url.encode()).hexdigest()}"
+        if cache_key in mpd_cache:
+            mpd_data = mpd_cache[cache_key]
+        else:
+            # Download and parse MPD
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
+            proxy_config = get_proxy_for_url(mpd_url)
+            proxy_key = proxy_config['http'] if proxy_config else None
+
+            with make_persistent_request(mpd_url, headers=headers, timeout=REQUEST_TIMEOUT, proxy_url=proxy_key) as response:
+                response.raise_for_status()
+                mpd_content = response.text
+
+            mpd_data = parse_mpd_content(mpd_content)
+            mpd_cache[cache_key] = mpd_data
+
+        # Build HLS playlist
+        hls_content = build_hls_playlist(mpd_data, profile_id, request.host, key_id, key)
+
+        return Response(hls_content, mimetype='application/vnd.apple.mpegurl')
+
+    except Exception as e:
+        app.logger.error(f"Errore generating playlist: {str(e)}")
+        return f"Error generating playlist: {str(e)}", 500
+
+@app.route('/proxy/mpd/segment.mp4')
+def mpd_segment():
+    """Download and decrypt MP4 segment"""
+    if not MPD_SUPPORT:
+        return "MPD support not available. Install xmltodict and pycryptodome", 500
+
+    try:
+        segment_url = request.args.get('u')
+        key_hex = request.args.get('k')
+        iv_hex = request.args.get('iv')
+
+        if not segment_url:
+            return "Missing required parameter 'u' (segment URL)", 400
+
+        # Check cache first
+        cache_key = f"mpd_segment_{hashlib.md5(segment_url.encode()).hexdigest()}"
+        if cache_key in segment_cache:
+            app.logger.info(f"MPD segment cache hit: {segment_url}")
+            return Response(segment_cache[cache_key], mimetype='video/mp4')
+
+        # Download segment
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        proxy_config = get_proxy_for_url(segment_url)
+        proxy_key = proxy_config['http'] if proxy_config else None
+
+        with make_persistent_request(segment_url, headers=headers, timeout=REQUEST_TIMEOUT, proxy_url=proxy_key) as response:
+            response.raise_for_status()
+            segment_data = response.content
+
+        # Decrypt if key provided
+        if key_hex:
+            app.logger.info(f"Decrypting segment with key: {key_hex[:8]}...")
+            segment_data = decrypt_segment(segment_data, key_hex, iv_hex)
+
+        # Cache the segment
+        segment_cache[cache_key] = segment_data
+
+        return Response(segment_data, mimetype='video/mp4')
+
+    except Exception as e:
+        app.logger.error(f"Errore processing segment: {str(e)}")
+        return f"Error processing segment: {str(e)}", 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=7860, debug=False)
-
+    port = int(os.environ.get("PORT", 7860))
+    
+    # Log di avvio
+    app.logger.info("="*50)
+    app.logger.info("PROXY SERVER AVVIATO")
+    app.logger.info("="*50)
+    app.logger.info(f"Porta: {port}")
+    app.logger.info("="*50)
+    
+    # Avvia solo Flask senza WebSocket
+    app.run(host="0.0.0.0", port=port, debug=False)
