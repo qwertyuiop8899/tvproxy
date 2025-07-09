@@ -6,3 +6,5 @@ PySocks
 psutil==5.9.6
 gunicorn==21.2.0
 urllib3
+xmltodict==0.14.2
+pycryptodome==3.22.0
