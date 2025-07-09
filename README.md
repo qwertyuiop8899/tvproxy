@@ -128,8 +128,10 @@ git clone https://github.com/nzo66/tvproxy.git
 cd tvproxy
 pip install -r requirements.txt
 
-echo "PROXY=socks5://user:pass@proxy.com:1080" > .env
-echo "DADDY_PROXY=socks5://user:pass@daddy-proxy.com:1080" >> .env
+mv env.example .env
+nano .env
+
+`adesso modifica il file env`
 
 gunicorn app:app -w 4 --worker-class gevent -b 0.0.0.0:7860
 ```
@@ -141,8 +143,10 @@ git clone https://github.com/nzo66/tvproxy.git
 cd tvproxy
 pip install -r requirements.txt
 
-echo "PROXY=socks5://user:pass@proxy.com:1080" > .env
-echo "DADDY_PROXY=socks5://user:pass@daddy-proxy.com:1080" >> .env
+mv env.example .env
+nano .env
+
+`adesso modifica il file env`
 
 gunicorn app:app -w 4 --worker-class gevent --worker-connections 100 \
         -b 0.0.0.0:7860 --timeout 120 --keep-alive 5 \
