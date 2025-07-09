@@ -32,7 +32,8 @@ except ImportError:
 app = Flask(__name__)
 
 load_dotenv()
-
+mpd_cache = TTLCache(maxsize=100, ttl=300)
+segment_cache = TTLCache(maxsize=500, ttl=1800)
 # --- Classe VavooResolver per gestire i link Vavoo ---
 class VavooResolver:
     def __init__(self):
@@ -2850,6 +2851,7 @@ def build_hls_playlist(mpd_data, profile_id, request_host, key_id=None, key=None
 @app.route('/proxy/mpd/manifest.m3u8')
 def mpd_manifest():
     """Convert MPD to HLS master manifest"""
+    return handle_mpd_manifest(request, mpd_cache)
     if not MPD_SUPPORT:
         return "MPD support not available. Install xmltodict and pycryptodome", 500
 
